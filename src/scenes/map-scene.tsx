@@ -1,4 +1,4 @@
-// import loadScm from "@utils/load-scm";
+import loadScm from "@utils/load-scm";
 import { log } from "@ipc/log";
 import processStore from "@stores/process-store";
 import { OpenBW } from "@openbw/openbw";
@@ -24,7 +24,6 @@ import { cleanMapTitles, createMapImage } from "@utils/chk-utils";
 import { pluginsStore } from "@stores/plugins-store";
 import { TRScene, TRSceneID } from "./scene";
 import { GameScene } from "./game-scene/game-scene";
-// import loadScm from "@utils/load-scm";
 // import { openFile } from "@ipc/files";
 
 const updateWindowTitle = ( title: string ) => {
@@ -48,7 +47,7 @@ export class MapScene implements TRScene {
         log.debug( "loading chk" );
 
         const janitor = new Janitor( "MapSceneLoader" );
-        const chkBuffer = {} as Buffer; // await loadScm( Buffer.from(fileBuffer ));
+        const chkBuffer = await loadScm( Buffer.from( this.#fileBuffer ) );
 
         const chkDowngrader = new ChkDowngrader();
         const dBuffer = chkDowngrader.downgrade( chkBuffer );
@@ -57,7 +56,17 @@ export class MapScene implements TRScene {
         cleanMapTitles( map );
         updateWindowTitle( map.title );
 
-        useReplayAndMapStore.setState( { map, mapImage: await createMapImage( map ) } );
+        // bw-chk's minimap preview generator occasionally runs past a tile buffer
+        // (e.g. missing or unusual CASC graphics for a tileset). This preview is
+        // decorative — if it fails, keep the map and boot OpenBW anyway so the
+        // 3D terrain still renders.
+        let mapImage: HTMLCanvasElement | undefined = undefined;
+        try {
+            mapImage = await createMapImage( map );
+        } catch ( err ) {
+            console.warn( "[map-scene] createMapImage failed, continuing without minimap:", err );
+        }
+        useReplayAndMapStore.setState( { map, mapImage } );
         settingsStore().initSessionData( "map" );
         pluginsStore().setSessionPlugins( "replay" );
         globalEvents.emit( "map-ready", { map } );
@@ -81,8 +90,25 @@ export class MapScene implements TRScene {
                 openBW.setUnitLimits( 1700 );
                 openBW.loadMap( dBuffer );
                 openBW.setReplayFrameListener(() => {});
+                const disableHermesBridge =
+                    new URLSearchParams( globalThis.location?.search ?? "" )
+                        .get( "disableHermesBridge" ) === "1";
+                if ( disableHermesBridge ) {
+                    openBW.setSandboxMode( false );
+                    openBW.setPaused( true );
+                }
 
                 const mapPlayers: BasePlayer[] = [];
+                if ( disableHermesBridge ) {
+                    mapPlayers.push( {
+                        id: 0,
+                        color: playerColors[0]!.hex,
+                        name: "Player 0",
+                        race: "terran",
+                    } );
+                    return mapPlayers;
+                }
+
                 const p = new PlayerBufferViewIterator( openBW );
 
                 let id = 0;
@@ -103,8 +129,35 @@ export class MapScene implements TRScene {
                 return mapPlayers;
             }
         );
-        
-        janitor.mop(await music.playGame());
+
+        // Music load goes through the CASC HTTP bridge + ResourceIncrementalLoader.
+        // In WebGL compat / headless / stripped environments that path can fail
+        // ("Array buffer allocation failed") and that must NOT block the map
+        // from rendering. A missing soundtrack is much better than no terrain.
+        //
+        // 2026 optimization: even when it SUCCEEDS, `music.playGame` chunks a
+        // large .ogg over HTTP which can take 30+ seconds on the CASC bridge.
+        // That blocks the GameScene mount. Fire-and-forget so the scene shows
+        // immediately and audio arrives whenever it arrives.
+        void (async () => {
+            try {
+                const waitForGesture = () =>
+                    new Promise<void>((res) => {
+                        const done = () => {
+                            window.removeEventListener("pointerdown", done);
+                            window.removeEventListener("keydown", done);
+                            res();
+                        };
+                        window.addEventListener("pointerdown", done, { once: true });
+                        window.addEventListener("keydown", done, { once: true });
+                    });
+                await waitForGesture();
+                const stop = await music.playGame();
+                janitor.mop( stop );
+            } catch ( err ) {
+                console.warn( "[map-scene] music.playGame failed, continuing without audio:", err );
+            }
+        })();
         worldComposer.surfaceComposer.gameSurface.show();
         worldComposer.apiSession.ui.show();
         return {

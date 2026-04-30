@@ -69,6 +69,7 @@
         "concat-stream": "^2.0.0",
         "deep-diff": "^1.0.2",
         "deepmerge": "^4.2.2",
+        "events": "^3.3.0",
         "express": "^4.17.3",
         "immer": "^9.0.15",
         "leva": "^0.9.23",
@@ -89,10 +90,12 @@
         "sanitize-filename": "^1.6.3",
         "scm-extractor": "^1.0.6",
         "semver": "^7.3.5",
+        "stream-browserify": "^3.0.0",
         "three": "0.156.0",
         "three-gpu-pathtracer": "^0.0.6",
         "three-instanced-uniforms-mesh": "^0.46.0",
         "three-janitor": "^2.0.1",
+        "util": "^0.12.5",
         "zustand": "4.1.1"
     },
     "devDependencies": {

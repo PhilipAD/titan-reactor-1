@@ -40,26 +40,36 @@ export const createOpenBWComposer = (
 
     const soundChannels = new SoundChannels( mixer );
 
+    let buildSoundsErrorCount = 0;
     const buildSounds = ( elapsed: number ) => {
-        const soundsAddr = world.openBW.getSoundsAddress();
-        for ( let i = 0; i < world.openBW.getSoundsCount(); i++ ) {
-            const addr = ( soundsAddr >> 2 ) + ( i << 2 );
-            const typeId = world.openBW.HEAP32[addr];
-            const x = world.openBW.HEAP32[addr + 1];
-            const y = world.openBW.HEAP32[addr + 2];
-            const unitTypeId = world.openBW.HEAP32[addr + 3];
+        try {
+            const soundsAddr = world.openBW.getSoundsAddress();
+            for ( let i = 0; i < world.openBW.getSoundsCount(); i++ ) {
+                const addr = ( soundsAddr >> 2 ) + ( i << 2 );
+                const typeId = world.openBW.HEAP32[addr];
+                const x = world.openBW.HEAP32[addr + 1];
+                const y = world.openBW.HEAP32[addr + 2];
+                const unitTypeId = world.openBW.HEAP32[addr + 3];
 
-            if ( world.fogOfWar.isVisible( floor32( x ), floor32( y ) ) && typeId !== 0 ) {
-                buildSound(
-                    elapsed,
-                    x,
-                    y,
-                    typeId,
-                    unitTypeId,
-                    pxToWorld,
-                    viewInput.primaryViewport!.audioType,
-                    viewInput.primaryViewport!.projectedView,
-                    soundChannels
+                if ( world.fogOfWar.isVisible( floor32( x ), floor32( y ) ) && typeId !== 0 ) {
+                    buildSound(
+                        elapsed,
+                        x,
+                        y,
+                        typeId,
+                        unitTypeId,
+                        pxToWorld,
+                        viewInput.primaryViewport!.audioType,
+                        viewInput.primaryViewport!.projectedView,
+                        soundChannels
+                    );
+                }
+            }
+        } catch ( e ) {
+            buildSoundsErrorCount++;
+            if ( buildSoundsErrorCount <= 5 ) {
+                console.warn(
+                    `[openbw-composer] buildSounds threw (${buildSoundsErrorCount}/5): ${e instanceof Error ? e.message : String( e )}`
                 );
             }
         }
@@ -149,14 +159,33 @@ export const createOpenBWComposer = (
             _currentFrame = frame;
 
             if ( frame !== _previousBwFrame ) {
-                world.openBW.generateFrame();
+                const traceFirst = _previousBwFrame === -1;
+                if ( traceFirst ) console.log( `[openbw-composer][update] before generateFrame frame=${frame}` );
+                try { world.openBW.generateFrame(); } catch ( e ) { console.warn( "[openbw-composer][update] generateFrame threw:", e ); }
+                if ( traceFirst ) console.log( `[openbw-composer][update] after generateFrame frame=${frame}` );
 
                 if ( frame % 24 === 0 ) {
-                    updateCompletedUpgrades( frame );
+                    if ( ( globalThis as Record< string, unknown > ).__hermesCompletedRenderMode ) {
+                        if ( traceFirst ) console.log( `[openbw-composer][update] skipped updateCompletedUpgrades (completed render mode)` );
+                    } else {
+                        if ( traceFirst ) console.log( `[openbw-composer][update] before updateCompletedUpgrades` );
+                        try { updateCompletedUpgrades( frame ); } catch ( e ) { console.warn( "[openbw-composer][update] updateCompletedUpgrades threw:", e ); }
+                        if ( traceFirst ) console.log( `[openbw-composer][update] after updateCompletedUpgrades` );
+                    }
                 }
 
+                if ( traceFirst ) console.log( `[openbw-composer][update] before buildSounds` );
                 buildSounds( elapsed );
-                buildCreep( frame );
+                if ( traceFirst ) console.log( `[openbw-composer][update] after buildSounds` );
+                if ( traceFirst ) console.log( `[openbw-composer][update] before buildCreep` );
+                try {
+                    buildCreep( frame );
+                } catch ( e ) {
+                    console.warn(
+                        `[openbw-composer] buildCreep threw: ${e instanceof Error ? e.message : String( e )}`
+                    );
+                }
+                if ( traceFirst ) console.log( `[openbw-composer][update] after buildCreep` );
 
                 _previousBwFrame = frame;
 

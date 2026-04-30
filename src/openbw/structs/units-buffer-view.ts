@@ -189,12 +189,20 @@ export class UnitsBufferView extends FlingyBufferView implements UnitStruct {
 
     isAttacking() {
         if ( this.orderTargetAddr === 0 || this.orderTargetUnit === 0 ) return false;
-        if (this.subunit) {
-            if (!gameStore().assets!.bwDat .units[this.subunit.typeId]) {
-                debugger;
+        // Hermes 2026-04 spawn-anything pass: kept the defensive guard
+        // because subunit.typeId can briefly resolve to a value with no
+        // matching bwDat entry during completed-mode placement (the
+        // engine fills the unit struct in two phases). Throwing here
+        // would crash the entire scene-composer.onFrame and prevent
+        // rendering; treating it as "not attacking" is a safe default.
+        const bwDat = gameStore().assets?.bwDat;
+        let unit: UnitsBufferView = this;
+        if ( this.subunit && bwDat ) {
+            const subDat = bwDat.units[this.subunit.typeId];
+            if ( subDat && subDat.isTurret ) {
+                unit = this.subunit;
             }
         }
-        const unit = this.subunit && gameStore().assets!.bwDat .units[this.subunit.typeId].isTurret ? this.subunit : this;
         const sprite = unit.getSprite();
         if (!sprite) return false;
     
@@ -260,7 +268,11 @@ export class UnitsBufferViewIterator {
 
     constructor( openBW: OpenBW ) {
         this.#bw = openBW;
-        this.#unitList = new IntrusiveList( openBW.HEAPU32, 0, 43 );
+        // Hermes 2026-04 spawn-anything pass: pass a getter so the
+        // intrusive list always reads the LIVE post-grow heap (the old
+        // ArrayBuffer detaches when WASM memory grows during a Hermes
+        // batch spawn and any read on the stale view returns 0).
+        this.#unitList = new IntrusiveList( () => openBW.HEAPU32, 0, 43 );
         this.#unitBufferView = new UnitsBufferView( openBW );
     }
 
@@ -269,7 +281,16 @@ export class UnitsBufferViewIterator {
 
         for ( let p = 0; p < 12; p++ ) {
             this.#unitList.addr = playersUnitAddr + ( p << 3 );
-            for ( const unitAddr of this.#unitList ) {
+            // Hermes 2026-04 spawn-anything pass: use walk() instead of
+            // the legacy iterator. The per-player units list is a
+            // "phantom-unit sentinel" (pairOffset=43, link offset 172),
+            // and the legacy iter terminates one node early -- skipping
+            // the TAIL of each player's unit list, which for Hermes is
+            // the FIRST unit spawned via _create_completed_unit_at
+            // (typically the Command Center). Without walk(), the CC is
+            // visible on screen but unclickable because it never gets
+            // registered into the unit quadtree or linked to its image.
+            for ( const unitAddr of this.#unitList.walk() ) {
                 yield this.#unitBufferView.get( unitAddr );
             }
         }

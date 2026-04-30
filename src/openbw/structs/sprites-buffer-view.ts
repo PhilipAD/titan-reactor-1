@@ -24,7 +24,9 @@ export class SpritesBufferView implements SpriteStruct {
 
     constructor( bw: OpenBW ) {
         this.#bw = bw;
-        this.images = new IntrusiveList( bw.HEAPU32, 0 );
+        // Hermes 2026-04 spawn-anything pass: see units-buffer-view.ts
+        // for why we pass a getter instead of the raw typed-array.
+        this.images = new IntrusiveList( () => bw.HEAPU32, 0 );
         this.#mainImage = new ImageBufferView( bw );
     }
 

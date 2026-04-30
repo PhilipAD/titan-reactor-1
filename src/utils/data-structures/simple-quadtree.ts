@@ -40,7 +40,15 @@ export class SimpleQuadtree<T> {
 
     add(x: number, y: number, item: T) {
         this.#normalize(this.#normalized, x, y);
-        this.#items[`${this.#normalized.x},${this.#normalized.y}`].push(item);
+        if (
+            !Number.isFinite( this.#normalized.x ) ||
+            !Number.isFinite( this.#normalized.y )
+        ) {
+            return;
+        }
+        const cellX = Math.min( this.#size - 1, Math.max( 0, this.#normalized.x ) );
+        const cellY = Math.min( this.#size - 1, Math.max( 0, this.#normalized.y ) );
+        this.#items[`${cellX},${cellY}`].push(item);
     }
 
     getNearby(x: number, y: number, radius = 0) {

@@ -14,6 +14,7 @@ import { ViewControllerComposer } from "@core/world/view-controller-composer";
 import { World } from "./world";
 import { isImageHd, isMesh } from "@utils/image-utils";
 import { createTransition } from "./transition";
+import { getTitanWebGLCompatMode } from "common/titan-webgl-compat";
 import { Terrain } from "@core/terrain";
 
 //tank base, minerals
@@ -151,7 +152,14 @@ export const createPostProcessingComposer = (
             _changeRenderMode(false);
             sceneComposer.onFrame(0, false);
 
-            renderComposer.glRenderer.compile(scene, camera);
+            // Three.js compile() iterates every material and force-compiles its
+            // shader program. Under SwiftShader this is sequential and seconds
+            // per shader, blocking activate() for minutes on larger maps.
+            // In compat mode we lazy-compile on first render instead — the user
+            // sees a brief stutter on the first frame but load completes fast.
+            if ( !getTitanWebGLCompatMode() ) {
+                renderComposer.glRenderer.compile(scene, camera);
+            }
         },
         api: {
             changeRenderMode(renderMode3D?: boolean) {
@@ -201,6 +209,7 @@ export const createPostProcessingComposer = (
                 // iterate all images again and update image frames according to different view camera
                 for (const spriteStruct of world.openBW.iterators.sprites) {
                     const object = sprites.get(spriteStruct.index);
+                    const unit = sprites.getUnit(spriteStruct.index);
 
                     if (!object || !object.visible) continue;
 
@@ -208,7 +217,9 @@ export const createPostProcessingComposer = (
                         ? 0
                         : spriteSortOrder(spriteStruct);
 
-                    for (const imgAddr of spriteStruct.images.reverse()) {
+                    // Hermes 2026-04 spawn-anything pass: use walkReverse() — the legacy
+                    // reverse() iterator terminates one node early.
+                    for (const imgAddr of spriteStruct.images.walkReverse()) {
                         const imageStruct = world.openBW.structs.image.get(imgAddr);
                         //TODO: why would image not exist here?
                         const image = images.get(imageStruct.index);
@@ -219,7 +230,8 @@ export const createPostProcessingComposer = (
                                 imageStruct,
                                 image,
                                 v.renderMode3D,
-                                v.direction32
+                                v.direction32,
+                                unit?.id
                             );
                         }
                     }

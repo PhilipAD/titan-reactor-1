@@ -77,8 +77,14 @@ export const useSceneStore = create<SceneStore>((set, get) => ({
             if (err instanceof Error) {
                 log.error(err.stack);
                 set({ error: err, status: "error", scene: null, nextScene: null })
+                const params = new URLSearchParams( window.location.search );
+                const hermesEmbed =
+                    params.get( "hideWelcome" ) === "1" ||
+                    params.get( "hidewelcome" ) === "1" ||
+                    params.has( "hermesRace" ) ||
+                    params.get( "hermesBoot" ) === "1";
                 renderAppUI({
-                    surface: getWraithSurface().canvas,
+                    surface: hermesEmbed ? undefined : getWraithSurface().canvas,
                     key: "error",
                     scene: null,
                 })

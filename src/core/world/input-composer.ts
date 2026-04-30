@@ -67,12 +67,17 @@ export const createInputComposer = (
         update(
             delta: number,
             elapsed: number,
-            { sceneController }: ViewControllerComposer,
+            viewControllerComposer: ViewControllerComposer,
             overlay: OverlayComposer
         ) {
-            if ( !sceneController ) {
-                return;
-            }
+            const { sceneController } = viewControllerComposer;
+            const hermesCameraLocked = !!( globalThis as Record< string, unknown > )
+                .__hermesCameraLocked;
+            // 2026 Hermes embed: when no scene controller plugin is loaded the
+            // user still needs to be able to click units / drag a selection
+            // box. We process the unit-selection path even without a scene
+            // controller and only skip the controller-specific camera /
+            // minimap callbacks below.
 
             // send the mouse click event and cancel any further input handling if the event was cancelled by a listener
             if ( mouseInput.clicked ) {
@@ -87,6 +92,49 @@ export const createInputComposer = (
                 ( unitSelectionBox.isActive || !overlay.insideMinimap );
 
             unitSelectionBox.update();
+
+            // 2026 Hermes embed: classic StarCraft minimap click-to-pan. When
+            // there is no scene controller plugin loaded (the default state of
+            // our embed), Titan would never wire any onMinimapDragUpdate
+            // callback, leaving the minimap visually present but inert. Hook
+            // the click+drag against the init viewport's orbit camera so the
+            // map view jumps to wherever the user clicks on the minimap.
+            if (
+                !hermesCameraLocked &&
+                overlay.insideMinimap &&
+                overlay.minimapUv &&
+                ( mouseInput.clicked || mouseInput.move.z > -1 ) &&
+                !unitSelectionBox.isActive &&
+                ( ( globalThis as Record< string, unknown > )
+                    .__hermesClassicMinimap === true ||
+                    !sceneController )
+            ) {
+                const orbit = viewControllerComposer.viewports[0]?.orbit;
+                if ( orbit && typeof orbit.moveTo === "function" ) {
+                    try {
+                        // overlay.minimapUv is a (x,z) world-space target on
+                        // the ground plane; pass it to the orbit controls so
+                        // the camera glides there (enableTransition=true).
+                        orbit.moveTo(
+                            overlay.minimapUv.x,
+                            ( orbit as unknown as { _targetEnd: { y: number } } )
+                                ._targetEnd?.y ?? 0,
+                            overlay.minimapUv.y,
+                            true
+                        );
+                    } catch {
+                        /* swallow — camera-controls not yet ready */
+                    }
+                }
+            }
+
+            if ( !sceneController ) {
+                return;
+            }
+
+            if ( hermesCameraLocked ) {
+                return;
+            }
 
             if (
                 !unitSelectionBox.isActive &&

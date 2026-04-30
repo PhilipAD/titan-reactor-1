@@ -35,31 +35,52 @@ export class StdVector<T extends TypedArray> {
     }
 
     get size() {
-        let i = 0;
-
         const addr = this.heap[this.address];
         const end_addr = this.heap[this.address + 1];
 
-        while ( addr + ( i << this.#shift ) !== end_addr ) {
-            i = i + 1;
-        }
+        const stride = 1 << this.#shift;
 
-        return i;
+        if ( !Number.isFinite( addr ) || !Number.isFinite( end_addr ) ) return 0;
+        if ( addr === 0 || end_addr === 0 ) return 0;
+        if ( end_addr < addr ) return 0;
+
+        const byteSpan = end_addr - addr;
+        if ( byteSpan % stride !== 0 ) return 0;
+
+        const count = byteSpan / stride;
+        if ( count > 0xfffff ) return 0;
+        return count;
+    }
+
+    #safeRange() {
+        const addr = this.heap[this.address];
+        const end_addr = this.heap[this.address + 1];
+        const stride = 1 << this.#shift;
+
+        if ( !Number.isFinite( addr ) || !Number.isFinite( end_addr ) ) return null;
+        if ( addr === 0 || end_addr === 0 ) return null;
+        if ( end_addr < addr ) return null;
+        const byteSpan = end_addr - addr;
+        if ( byteSpan % stride !== 0 ) return null;
+        if ( byteSpan / stride > 0xfffff ) return null;
+
+        const lo = addr >> this.#shift;
+        const hi = end_addr >> this.#shift;
+        if ( lo < 0 || hi > this.heap.length ) return null;
+
+        return [ lo, hi ] as const;
     }
 
     copyData() {
-        const addr = this.heap[this.address];
-        const end_addr = this.heap[this.address + 1];
-
-        return this.heap.slice( addr >> this.#shift, end_addr >> this.#shift ) as T;
+        const r = this.#safeRange();
+        if ( !r ) return ( this.heap.slice( 0, 0 ) ) as T;
+        return this.heap.slice( r[0], r[1] ) as T;
     }
 
     copyDataShallow() {
-        const addr = this.heap[this.address];
-        const end_addr = this.heap[this.address + 1];
-
-        return this.heap.subarray( addr >> this.#shift, end_addr >> this.#shift ) as T;
-        // return this.heap.slice(this.index, this.index + this.size);
+        const r = this.#safeRange();
+        if ( !r ) return ( this.heap.subarray( 0, 0 ) ) as T;
+        return this.heap.subarray( r[0], r[1] ) as T;
     }
 
     get isEmpty() {
@@ -67,14 +88,24 @@ export class StdVector<T extends TypedArray> {
     }
 
     *[Symbol.iterator](): IterableIterator<number> {
-        let i = 0;
-
         const addr = this.heap[this.address];
         const end_addr = this.heap[this.address + 1];
+        const stride = 1 << this.#shift;
 
-        while ( addr + ( i << this.#shift ) !== end_addr ) {
-            yield this.heap[( addr >> this.#shift ) + i];
-            i = i + 1;
+        if ( !Number.isFinite( addr ) || !Number.isFinite( end_addr ) ) return;
+        if ( addr === 0 || end_addr === 0 ) return;
+        if ( end_addr < addr ) return;
+        const byteSpan = end_addr - addr;
+        if ( byteSpan % stride !== 0 ) return;
+
+        const baseIdx = addr >> this.#shift;
+        const count = byteSpan / stride;
+        const safeCount = count > 0xfffff ? 0 : count;
+        const heapLen = this.heap.length;
+        for ( let i = 0; i < safeCount; i++ ) {
+            const idx = baseIdx + i;
+            if ( idx < 0 || idx >= heapLen ) return;
+            yield this.heap[idx];
         }
     }
 }

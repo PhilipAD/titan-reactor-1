@@ -142,11 +142,15 @@ export const doHeightMapEffect = ( {
     displaceCanvas.width = mapWidth * geomOptions.texPxPerTile;
     displaceCanvas.height = mapHeight * geomOptions.texPxPerTile;
 
-    displaceCanvas.getContext( "2d" )?.drawImage( renderer.domElement, 0, 0 );
+    const heightCtx = displaceCanvas.getContext( "2d", { willReadFrequently: true } )!;
+    heightCtx.drawImage( renderer.domElement, 0, 0 );
 
-    const displacementImage = displaceCanvas
-        .getContext( "2d" )!
-        .getImageData( 0, 0, displaceCanvas.width, displaceCanvas.height )!;
+    const displacementImage = heightCtx.getImageData(
+        0,
+        0,
+        displaceCanvas.width,
+        displaceCanvas.height
+    )!;
 
     composer.dispose();
 

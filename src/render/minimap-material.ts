@@ -77,11 +77,13 @@ export class MinimapMaterial extends ShaderMaterial {
         unit: Unit,
         unitType: UnitDAT,
         fogOfWar: FogOfWar,
-        getPlayerColor: ( id: number ) => Color
+        getPlayerColor: ( id: number ) => Color,
+        forceVisible = false
     ) {
         const isResourceContainer = unitType.isResourceContainer && unit.owner === 11;
 
         if (
+            !forceVisible &&
             !isResourceContainer &&
             !fogOfWar.isVisible( floor32( unit.x ), floor32( unit.y ) )
         ) {

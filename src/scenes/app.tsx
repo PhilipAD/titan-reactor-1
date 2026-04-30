@@ -53,7 +53,14 @@ export const App = ({
             }}>
             {error && <GlobalErrorState error={error} action={null} />}
 
-            {surface && <WrappedCanvas canvas={surface} style={{ zIndex: "-1" }} />}
+            {/* 2026 fix: previously this had zIndex:-1 which pushed the canvas
+                behind the App container, so pointerdown events never reached
+                the canvas (camera-controls listens on the canvas, so the
+                camera was completely frozen for mouse input). With the
+                negative z-index removed the canvas is the topmost flex item
+                and pointer events flow correctly; UI overlays (Welcome,
+                InGame menu) use position:absolute so they paint above. */}
+            {surface && <WrappedCanvas canvas={surface} />}
             <LoadBar
                 color="#64c857"
                 thickness={10}

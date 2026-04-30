@@ -15,32 +15,56 @@ export const createCompletedUpgradesHelper = (
 
     let productionData: StdVector<Int32Array>;
 
+    let updateErrorCount = 0;
+
+    let firstCallTraced = false;
     const updateCompletedUpgrades = ( currentBwFrame: number ) => {
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if ( !productionData ) {
-            productionData = new StdVector( openBW.HEAP32, openBW._get_buffer( 9 ) );
+        const trace = !firstCallTraced;
+        if ( trace ) console.log( `[completed-upgrades] enter frame=${currentBwFrame}` );
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+            if ( !productionData ) {
+                if ( trace ) console.log( `[completed-upgrades] before _get_buffer(9)` );
+                const buf = openBW._get_buffer( 9 );
+                if ( trace ) console.log( `[completed-upgrades] _get_buffer(9)=${buf}` );
+                productionData = new StdVector( openBW.HEAP32, buf );
+            }
+            if ( trace ) console.log( `[completed-upgrades] before second _get_buffer(9)` );
+            const addr32 = openBW._get_buffer( 9 ) >> 2;
+            if ( trace ) console.log( `[completed-upgrades] addr32=${addr32}` );
+            for ( let player = 0; player < 8; player++ ) {
+                if ( trace ) console.log( `[completed-upgrades] player=${player} upgrades start` );
+                productionData.address = addr32 + player * 9 + 3;
+                _updateCompleted(
+                    completedUpgrades[player],
+                    completedUpgradesReset[player],
+                    3,
+                    currentBwFrame,
+                    player,
+                    onUpgradeCompleted
+                );
+                if ( trace ) console.log( `[completed-upgrades] player=${player} upgrades done, research start` );
+                productionData.address += 3;
+                _updateCompleted(
+                    completedResearch[player],
+                    completedResearchReset[player],
+                    2,
+                    currentBwFrame,
+                    player,
+                    onResearchCompleted
+                );
+                if ( trace ) console.log( `[completed-upgrades] player=${player} research done` );
+            }
+        } catch ( e ) {
+            updateErrorCount++;
+            if ( updateErrorCount <= 5 ) {
+                console.warn(
+                    `[completed-upgrades] update threw (${updateErrorCount}/5): ${e instanceof Error ? e.message : String( e )}`
+                );
+            }
         }
-        const addr32 = openBW._get_buffer( 9 ) >> 2;
-        for ( let player = 0; player < 8; player++ ) {
-            productionData.address = addr32 + player * 9 + 3;
-            _updateCompleted(
-                completedUpgrades[player],
-                completedUpgradesReset[player],
-                3,
-                currentBwFrame,
-                player,
-                onUpgradeCompleted
-            );
-            productionData.address += 3;
-            _updateCompleted(
-                completedResearch[player],
-                completedResearchReset[player],
-                2,
-                currentBwFrame,
-                player,
-                onResearchCompleted
-            );
-        }
+        firstCallTraced = true;
+        if ( trace ) console.log( `[completed-upgrades] exit` );
     };
 
     const _updateCompleted = (

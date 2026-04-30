@@ -23,6 +23,7 @@ import { HeightMaps } from "./height-maps/render-height-maps";
 import gameStore from "@stores/game-store";
 import { getTerrainY } from "./get-terrain-y";
 import processStore from "@stores/process-store";
+import { getTitanWebGLCompatMode } from "common/titan-webgl-compat";
 
 export const createTerrainGeometryFromQuartiles = (
     mapWidth: number,
@@ -58,6 +59,10 @@ export const createTerrainGeometryFromQuartiles = (
 
     const qw = mapTextures.quartileWidth;
     const qh = mapTextures.quartileHeight;
+
+    // Any setting that disables shadows also makes per-mesh castShadow pointless
+    // and expensive to compute during scene traversal.
+    const webglCompat = getTitanWebGLCompatMode();
 
     const genProcess = processStore().create("terrain-quartiles", qw * qh );
 
@@ -250,8 +255,8 @@ export const createTerrainGeometryFromQuartiles = (
             basicMaterial.onBeforeCompile = materialOnBeforeCompile;
 
             const terrainQuartile = new Mesh( g, standardMaterial );
-            terrainQuartile.castShadow = true;
-            terrainQuartile.receiveShadow = true;
+            terrainQuartile.castShadow = !webglCompat;
+            terrainQuartile.receiveShadow = !webglCompat;
             terrainQuartile.userData = {
                 basicMaterial,
                 standardMaterial,
@@ -272,8 +277,8 @@ export const createTerrainGeometryFromQuartiles = (
 
     const WATER_SPEED = 4000;
 
-    terrain.castShadow = true;
-    terrain.receiveShadow = true;
+    terrain.castShadow = !webglCompat;
+    terrain.receiveShadow = !webglCompat;
     terrain.rotation.x = -Math.PI / 2;
     terrain.matrixAutoUpdate = false;
     terrain.updateMatrix();

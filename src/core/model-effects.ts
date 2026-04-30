@@ -14,6 +14,7 @@ import { Image3D } from "./image-3d";
 import { ImageHD } from "./image-hd";
 import { modelSetModifiers } from "./model-effects-configuration";
 import { Unit } from "./unit";
+import { getHermesUnitVisualAction } from "./world/hermes-visual-actions";
 
 export const overlayEffectsMainImage: { image: Image3D | null } = { image: null };
 
@@ -59,11 +60,66 @@ export const applyOverlayEffectsToImageHD = ( imageBuffer: ImageBufferView ) => 
 let _frameInfo: { frame: number; flipped: boolean } = { frame: 0, flipped: false };
 let _needsUpdateFrame = false;
 
+const visualFrameNow = () => ( typeof performance !== "undefined" ? performance.now() : Date.now() );
+
+const resolveHermesVisualFrameInfo = (
+    baseFrame: number,
+    baseFlipped: boolean,
+    frameCount: number,
+    unitId: number | undefined,
+    hasDirectionalFrames: boolean
+) => {
+    if ( !( globalThis as Record< string, unknown > ).__hermesCompletedRenderMode ) {
+        return { frame: baseFrame, flipped: baseFlipped };
+    }
+    const action = getHermesUnitVisualAction( unitId );
+    if ( !action || action.kind === "idle" || frameCount <= 1 ) {
+        return { frame: baseFrame, flipped: baseFlipped };
+    }
+
+    const directionalLaneSize = frameCount >= 17 ? 17 : frameCount;
+    const frameSets = Math.max( 1, Math.floor( frameCount / directionalLaneSize ) );
+    const actionDirection32 = action.direction32;
+    const directionFrame =
+        hasDirectionalFrames && typeof actionDirection32 === "number"
+            ? actionDirection32 > 16
+                ? 32 - actionDirection32
+                : actionDirection32
+            : Math.abs( baseFrame ) % directionalLaneSize;
+    const flipped =
+        hasDirectionalFrames && typeof actionDirection32 === "number"
+            ? actionDirection32 > 16
+            : baseFlipped;
+
+    // Completed-render mode does not tick OpenBW iscript, so action poses
+    // need a small client-side phase driver. Most BW unit atlases are
+    // arranged as 17 directional frames per pose/step.
+    if ( frameSets <= 1 ) {
+        return {
+            frame: hasDirectionalFrames
+                ? directionFrame
+                : Math.floor( visualFrameNow() / 160 + action.seed ) % frameCount,
+            flipped,
+        };
+    }
+
+    const speedMs = action.kind === "gathering" ? 120 : 150;
+    const phaseBase = Math.floor( visualFrameNow() / speedMs + action.seed );
+    let phase = phaseBase % frameSets;
+    if ( action.kind === "gathering" && frameSets >= 3 ) {
+        phase = 1 + ( phaseBase % ( frameSets - 1 ) );
+    }
+
+    const nextFrame = directionFrame + phase * directionalLaneSize;
+    return { frame: nextFrame < frameCount ? nextFrame : directionFrame, flipped };
+};
+
 export const applyRenderModeToImageHD = (
     imageStruct: ImageBufferView,
     image: ImageHD,
     renderMode3D: boolean,
-    direction: number
+    direction: number,
+    unitId?: number
 ) => {
     imageTypeId = gameStore().assets!.refId( imageStruct.typeId );
 
@@ -71,10 +127,11 @@ export const applyRenderModeToImageHD = (
     image.material.depthWrite = false;
 
     //TODO: don't set directional on firebat flame (421) if eminating from bunker (see: bwgame.h:12513)
-    if (
+    const hasDirectionalFrames = !!(
         imageHasDirectionalFrames( imageStruct ) &&
         imageStruct.typeId !== imageTypes.bunkerOverlay
-    ) {
+    );
+    if ( hasDirectionalFrames ) {
         _frameInfo = applyCameraDirectionToImageFrame( direction, imageStruct );
     } else {
         _frameInfo.frame = imageStruct.frameIndex;
@@ -94,6 +151,14 @@ export const applyRenderModeToImageHD = (
             }
         }
     }
+
+    _frameInfo = resolveHermesVisualFrameInfo(
+        _frameInfo.frame,
+        _frameInfo.flipped,
+        image.frames.length,
+        unitId,
+        hasDirectionalFrames
+    );
 
     image.setFrame( _frameInfo.frame, _frameInfo.flipped );
 
@@ -144,6 +209,15 @@ export const applyModelEffectsToImage3d = (
     }
 
     if ( _needsUpdateFrame ) {
-        image.setFrame( imageBufferView.frameIndex );
+        const frameInfo = resolveHermesVisualFrameInfo(
+                imageBufferView.frameIndex,
+                false,
+                image.frames.length,
+                unit?.id,
+                false
+            );
+        image.setFrame(
+            frameInfo.frame
+        );
     }
 };

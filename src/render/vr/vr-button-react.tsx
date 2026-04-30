@@ -37,9 +37,13 @@ const VRButtonReact: React.FC<VRButtonProps> = ({ renderer }) => {
 
   useEffect(() => {
     if ('xr' in navigator) {
-      navigator.xr!.isSessionSupported('immersive-vr').then((supported) => {
-        setIsSupported(supported);
-      });
+      navigator.xr!.isSessionSupported('immersive-vr')
+        .then((supported) => {
+          setIsSupported(supported);
+        })
+        .catch(() => {
+          setIsSupported(false);
+        });
     }
   }, []);
 

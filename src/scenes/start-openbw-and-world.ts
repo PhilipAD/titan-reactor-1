@@ -37,12 +37,13 @@ export async function startOpenBWAndWorld(
 
     await worldComposer.init();
 
-    if ( onWorldInitialized ) await onWorldInitialized( worldComposer );
+    if ( onWorldInitialized ) {
+        await onWorldInitialized( worldComposer );
+    }
 
-    await worldComposer.activate( false  );
+    await worldComposer.activate( false );
 
     processStore().clearAll();
 
-   
     return worldComposer;
 }

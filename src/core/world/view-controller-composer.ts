@@ -3,6 +3,7 @@ import { log } from "@ipc/log";
 import { Janitor } from "three-janitor";
 import { DamageType, Explosion } from "common/enums";
 import { PerspectiveCamera, Vector3 } from "three";
+import CameraControls from "camera-controls";
 import { GameViewPort } from "../../camera/game-viewport";
 import { World } from "./world";
 import type { SceneController } from "@plugins/scene-controller";
@@ -50,7 +51,113 @@ export const createViewControllerComposer = (
     // for when no scene controller is loaded initially
     const initViewport = new GameViewPort( gameSurface, true );
     initViewport.fullScreen();
-    initViewport.orbit.setTarget(initialStartLocation.x, initialStartLocation.y, initialStartLocation.z);
+    // 2026 Hermes embed: lock the camera target by default. The dashboard
+    // boots centered on the Command Center; users can zoom in/out, but cannot
+    // pan, drag, rotate, minimap-pan, or edge-pan away from that CC target.
+    // We keep a slight tilt (polar=0.42 rad) instead of
+    // 0 so the SD sprite billboards still look right (perfect overhead would
+    // make units paper-thin and the heightmap unreadable).
+    //
+    // Override with ?camera3d=1 to restore the free-orbit isometric camera.
+    let useClassic = true;
+    try {
+        const qs = new URLSearchParams( globalThis.location?.search ?? "" );
+        if ( qs.get( "camera3d" ) === "1" || qs.get( "camera3d" ) === "true" ) {
+            useClassic = false;
+        }
+    } catch {
+        /* no-op for non-DOM contexts */
+    }
+
+    const CLASSIC_POLAR = 0.42;
+    const CLASSIC_DISTANCE = 180;
+    const CLASSIC_MIN_DISTANCE = 120;
+    const CLASSIC_MAX_DISTANCE = 280;
+    const HERMES_CAMERA_LOCKED = true;
+
+    if ( useClassic ) {
+        // Top-down looking straight down at the start location at distance 60
+        // The polar angle is fixed below.
+        initViewport.orbit.setLookAt(
+            initialStartLocation.x,
+            initialStartLocation.y + CLASSIC_DISTANCE * Math.cos( CLASSIC_POLAR ),
+            initialStartLocation.z + CLASSIC_DISTANCE * Math.sin( CLASSIC_POLAR ),
+            initialStartLocation.x,
+            initialStartLocation.y,
+            initialStartLocation.z,
+            false
+        );
+    } else {
+        initViewport.orbit.setLookAt(
+            initialStartLocation.x,
+            Math.max( 30, initialStartLocation.y + 30 ),
+            initialStartLocation.z + 30,
+            initialStartLocation.x,
+            initialStartLocation.y,
+            initialStartLocation.z,
+            false
+        );
+    }
+    try {
+        if ( useClassic ) {
+            // CLASSIC locked mode: panning/rotation gestures are disabled,
+            // but wheel zoom remains enabled and always dollies around the
+            // current CC target.
+            // Left-click remains available to unit selection because
+            // CameraControls receives ACTION.NONE for drag mouse/touch paths.
+            initViewport.orbit.mouseButtons.left = CameraControls.ACTION.NONE;
+            initViewport.orbit.mouseButtons.right = CameraControls.ACTION.NONE;
+            initViewport.orbit.mouseButtons.middle = CameraControls.ACTION.NONE;
+            initViewport.orbit.mouseButtons.wheel = CameraControls.ACTION.DOLLY;
+            initViewport.orbit.touches.one = CameraControls.ACTION.NONE;
+            initViewport.orbit.touches.two = CameraControls.ACTION.TOUCH_DOLLY;
+            initViewport.orbit.touches.three = CameraControls.ACTION.NONE;
+            initViewport.orbit.minDistance = CLASSIC_MIN_DISTANCE;
+            initViewport.orbit.maxDistance = CLASSIC_MAX_DISTANCE;
+            // Lock the angle so the camera stays at the classic SC tilt.
+            initViewport.orbit.minPolarAngle = CLASSIC_POLAR;
+            initViewport.orbit.maxPolarAngle = CLASSIC_POLAR;
+            initViewport.orbit.minAzimuthAngle = 0;
+            initViewport.orbit.maxAzimuthAngle = 0;
+            initViewport.orbit.azimuthRotateSpeed = 0;
+            initViewport.orbit.polarRotateSpeed = 0;
+            initViewport.orbit.dollySpeed = 1.4;
+            initViewport.orbit.dollyToCursor = false;
+            initViewport.orbit.truckSpeed = 0;
+        } else {
+            initViewport.orbit.mouseButtons.left = CameraControls.ACTION.ROTATE;
+            initViewport.orbit.mouseButtons.right = CameraControls.ACTION.TRUCK;
+            initViewport.orbit.mouseButtons.middle = CameraControls.ACTION.DOLLY;
+            initViewport.orbit.mouseButtons.wheel = CameraControls.ACTION.DOLLY;
+            initViewport.orbit.touches.one = CameraControls.ACTION.TOUCH_ROTATE;
+            initViewport.orbit.touches.two = CameraControls.ACTION.TOUCH_TRUCK;
+            initViewport.orbit.touches.three = CameraControls.ACTION.TOUCH_DOLLY;
+            initViewport.orbit.minDistance = 8;
+            initViewport.orbit.maxDistance = 200;
+            initViewport.orbit.minPolarAngle = 0.25;
+            initViewport.orbit.maxPolarAngle = Math.PI * 0.46;
+            initViewport.orbit.azimuthRotateSpeed = 1.6;
+            initViewport.orbit.polarRotateSpeed = 1.6;
+            initViewport.orbit.dollySpeed = 1.6;
+            initViewport.orbit.truckSpeed = 4.0;
+        }
+        // Snappy response — default 0.25s damping makes the iframe feel sluggish.
+        initViewport.orbit.smoothTime = 0.08;
+        initViewport.orbit.draggingSmoothTime = 0.04;
+        // Expose the orbit on window so tests / dashboard scripts can verify
+        // the camera actually moves in response to gestures. Cheap and only
+        // assigned in this fallback path.
+        ( globalThis as Record<string, unknown> ).__hermesInitOrbit =
+            initViewport.orbit;
+        ( globalThis as Record<string, unknown> ).__hermesInitCameraMode =
+            useClassic ? "classic" : "orbit";
+        ( globalThis as Record<string, unknown> ).__hermesCameraLocked =
+            HERMES_CAMERA_LOCKED;
+        ( globalThis as Record<string, unknown> ).__hermesCameraZoomEnabled =
+            useClassic;
+    } catch ( err ) {
+        log.warn( "@view-composer/init viewport mouse controls unavailable: " + String( err ) );
+    }
     const viewports: GameViewPort[] = [initViewport]
 
     const createViewports = (n = 4) => range( 0, n ).map( i => new GameViewPort( gameSurface, i === 0 ) );
@@ -62,6 +169,82 @@ export const createViewControllerComposer = (
     const _audioPosition = new Vector3();
 
     const janitor = new Janitor( "ViewInputComposer" );
+
+    // 2026 Hermes embed: classic StarCraft edge-of-screen camera pan.
+    // We track the mouse position on the canvas and, every frame, if the
+    // cursor sits in the EDGE_THICKNESS-pixel margin, we call orbit.truck()
+    // to pan the camera in that direction. Speed scales linearly with how
+    // close the mouse is to the edge so corners pan diagonally fast.
+    const EDGE_THICKNESS = 36; // px from edge that triggers pan
+    const EDGE_PAN_SPEED = 28; // base world units / second at full edge
+    let __hermesEdgeMouseX = -1;
+    let __hermesEdgeMouseY = -1;
+    let __hermesEdgeInside = false;
+    let __hermesEdgePanEnabled = false;
+    try {
+        const qs = new URLSearchParams( globalThis.location?.search ?? "" );
+        if ( qs.get( "edgePan" ) === "0" || qs.get( "edgePan" ) === "false" ) {
+            __hermesEdgePanEnabled = false;
+        }
+        // Camera lock intentionally ignores edgePan=1; unit selection remains
+        // active, but no user input is allowed to move the camera.
+    } catch {
+        /* no-op */
+    }
+    if ( __hermesEdgePanEnabled && typeof window !== "undefined" ) {
+        const onMove = ( ev: MouseEvent ) => {
+            __hermesEdgeMouseX = ev.clientX;
+            __hermesEdgeMouseY = ev.clientY;
+            __hermesEdgeInside = true;
+        };
+        const onLeave = () => {
+            __hermesEdgeInside = false;
+        };
+        window.addEventListener( "mousemove", onMove, { passive: true } );
+        window.addEventListener( "mouseleave", onLeave, { passive: true } );
+        window.addEventListener( "blur", onLeave );
+        janitor.mop( () => {
+            window.removeEventListener( "mousemove", onMove );
+            window.removeEventListener( "mouseleave", onLeave );
+            window.removeEventListener( "blur", onLeave );
+        }, "edge-pan-listeners" );
+    }
+    ( globalThis as Record< string, unknown > ).__hermesEdgePanEnabled =
+        __hermesEdgePanEnabled;
+    const __hermesUpdateEdgePan = ( delta: number ) => {
+        if ( !__hermesEdgePanEnabled || !__hermesEdgeInside ) return;
+        const w = gameSurface.bufferWidth;
+        const h = gameSurface.bufferHeight;
+        if ( w <= 0 || h <= 0 ) return;
+        const x = __hermesEdgeMouseX;
+        const y = __hermesEdgeMouseY;
+        if ( x < 0 || y < 0 || x > w || y > h ) return;
+        let dx = 0;
+        let dy = 0;
+        if ( x < EDGE_THICKNESS ) dx = -( EDGE_THICKNESS - x ) / EDGE_THICKNESS;
+        else if ( x > w - EDGE_THICKNESS )
+            dx = ( x - ( w - EDGE_THICKNESS ) ) / EDGE_THICKNESS;
+        if ( y < EDGE_THICKNESS ) dy = -( EDGE_THICKNESS - y ) / EDGE_THICKNESS;
+        else if ( y > h - EDGE_THICKNESS )
+            dy = ( y - ( h - EDGE_THICKNESS ) ) / EDGE_THICKNESS;
+        if ( dx === 0 && dy === 0 ) return;
+        const dt = Math.max( 0, delta ) / 1000;
+        const speed = EDGE_PAN_SPEED * dt;
+        // Note: orbit.truck(x, y) pans in screen-aligned axes — y down on
+        // screen = forward in world for our top-down camera, so we negate
+        // dy so the camera moves "up" (toward map top) when the mouse is at
+        // the top edge.
+        const orbit = viewports[0]?.orbit;
+        if ( orbit && typeof orbit.truck === "function" ) {
+            try {
+                orbit.truck( dx * speed, dy * speed, false );
+            } catch {
+                /* swallow — camera-controls sometimes throws on init */
+            }
+        }
+    };
+    ( globalThis as Record< string, unknown > ).__hermesUpdateEdgePan =
+        __hermesUpdateEdgePan;
 
     world.events.on( "resize", ( ) => {
         for ( const viewport of viewports ) {
@@ -87,6 +270,11 @@ export const createViewControllerComposer = (
             viewports,
         },
         update( delta: number ) {
+            // Camera is intentionally locked in the Hermes embed.
+            if ( !( globalThis as Record<string, unknown> ).__hermesCameraLocked ) {
+                __hermesUpdateEdgePan( delta );
+            }
+
             if ( !sceneController ) {
                 return;
             }

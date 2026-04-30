@@ -22,6 +22,14 @@ export const createDisplacementGeometryQuartile = (
         throw new Error( "Could not get canvas context" );
     }
 
+    // 2026 CPU optimization: read the whole canvas ONCE into a typed array and
+    // index directly, instead of calling getImageData(x,y,1,1) per vertex. On
+    // software renderers each tiny getImageData forces a CPU flush; this cuts
+    // tens of thousands of per-pixel reads down to one bulk copy.
+    const cw = canvas.width;
+    const ch = canvas.height;
+    const imgData = ctx.getImageData( 0, 0, cw, ch ).data;
+
     const pos = geom.getAttribute( "position" );
     const uvs = geom.getAttribute( "uv" ) as BufferAttribute;
     const nor = geom.getAttribute( "normal" );
@@ -35,8 +43,9 @@ export const createDisplacementGeometryQuartile = (
         n.fromBufferAttribute( nor as BufferAttribute | InterleavedBufferAttribute, i );
 
         const displacement = getDisplacement(
-            canvas,
-            ctx,
+            imgData,
+            cw,
+            ch,
             uv,
             scaleWidth,
             scaleHeight,
@@ -59,16 +68,17 @@ export const createDisplacementGeometryQuartile = (
 };
 
 function getDisplacement(
-    canvas: HTMLCanvasElement,
-    context: CanvasRenderingContext2D,
+    imgData: Uint8ClampedArray,
+    canvasWidth: number,
+    canvasHeight: number,
     uv: Vector2,
     scaleWidth: number,
     scaleHeight: number,
     offX: number,
     offY: number
 ) {
-    const w = canvas.width - 1;
-    const h = canvas.height - 1;
+    const w = canvasWidth - 1;
+    const h = canvasHeight - 1;
 
     const uvW = Math.floor( w * scaleWidth * uv.x ) + offX;
     const uvH = Math.floor( h * scaleHeight * ( 1 - uv.y ) ) + offY;
@@ -87,8 +97,10 @@ function getDisplacement(
         uvHnext = Math.max( 0, uvH - 1 );
     }
 
-    const direct = context.getImageData( uvW, uvH, 1, 1 ).data[0] / 255.0;
-    const next = context.getImageData( uvWnext, uvHnext, 1, 1 ).data[0] / 255.0;
+    const directIdx = ( uvH * canvasWidth + uvW ) * 4;
+    const nextIdx = ( uvHnext * canvasWidth + uvWnext ) * 4;
+    const direct = imgData[directIdx] / 255.0;
+    const next = imgData[nextIdx] / 255.0;
 
     return ( direct + next ) / 2;
 }

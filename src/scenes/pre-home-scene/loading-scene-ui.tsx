@@ -36,24 +36,65 @@ const styleCenterText: React.CSSProperties = {
 //     }
 // }
 
+// Hermes 2026-04 viewport-blur fix: when the loading scene runs inside
+// the Hermes dashboard iframe (or any embedder), the desktop-style
+// `body.backdropFilter = blur(20px) brightness(0)` overlay causes the
+// main viewport to render fully black/blurry — even AFTER the loading
+// scene unmounts, because the subscription callback fires once more
+// with `progress === 1` (so `brightness === 0`) right around the
+// unmount race window. Detect the embedder via `?hideWelcome=1` and
+// skip the body backdrop entirely in that mode.
+const isEmbedderMode = () => {
+    try {
+        const qs = new URLSearchParams( window.location.search );
+        if ( qs.get( "hideWelcome" ) === "1" || qs.get( "hidewelcome" ) === "1" ) {
+            return true;
+        }
+        if ( window.self !== window.top ) return true;
+    } catch {
+        return true;
+    }
+    return false;
+};
+
+const clearBodyBackdrop = () => {
+    document.body.style.backdropFilter = "";
+    document.body.style.background = "";
+    ( document.body.style as unknown as { webkitBackdropFilter?: string } ).webkitBackdropFilter = "";
+};
+
 export const LoadingSceneUI = ( {useStore} : {useStore: UseBoundStore<StoreApi<LoadingSceneStore>> }  ) => {
-    
+
     const {  pluginsReady, assetServerReady } = useStore( state => state );
 
     useEffect( () => {
-        return useProcessStore.subscribe( ( store ) => {
+        if ( isEmbedderMode() ) {
+            clearBodyBackdrop();
+            return;
+        }
+        let mounted = true;
+        const unsubscribe = useProcessStore.subscribe( ( store ) => {
+            if ( !mounted ) return;
             const b = ( 1 - store.getTotalProgress() ) * 0.2;
             document.body.style.backdropFilter = `blur(20px) grayscale(0.2) contrast(0.5) brightness(${b})`;
         } );
+        return () => {
+            mounted = false;
+            unsubscribe();
+            clearBodyBackdrop();
+        };
     }, [] );
 
     useEffect( () => {
+        if ( isEmbedderMode() ) {
+            clearBodyBackdrop();
+            return () => clearBodyBackdrop();
+        }
         document.body.style.backdropFilter =
             "blur(20px) grayscale(0.2) contrast(0.5) brightness(0.2)";
         document.body.style.background = `url(${titanReactorLogo}) center center / cover`;
         return () => {
-            document.body.style.backdropFilter = "";
-            document.body.style.background = "";
+            clearBodyBackdrop();
         };
     }, [] );
 

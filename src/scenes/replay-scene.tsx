@@ -74,10 +74,19 @@ export class ReplayScene implements TRScene {
             `@replay-scene-loader/game-type: ${GameTypes[this.replay.header.gameType]!}`
         );
 
+        // bw-chk's minimap preview occasionally indexes past a tile buffer for
+        // odd CASC graphics; the preview is decorative — skip it on failure
+        // so the 3D scene still renders.
+        let mapImage: HTMLCanvasElement | undefined = undefined;
+        try {
+            mapImage = await createMapImage(map);
+        } catch (err) {
+            console.warn("[replay-scene] createMapImage failed, continuing without minimap:", err);
+        }
         useReplayAndMapStore.setState({
             replay: this.replay,
             map,
-            mapImage: await createMapImage(map),
+            mapImage,
         });
         useReplayAndMapStore.setState({ replay: this.replay, map });
         settingsStore().initSessionData("replay");
@@ -135,7 +144,56 @@ export class ReplayScene implements TRScene {
             async (worldComposer) => {
                 const openBW = worldComposer.world.openBW;
 
+                // 2026 Hermes embed: there are three ways to handle the end
+                // of a replay in the embed, controlled by URL flags:
+                //
+                //   ?endless=1   — preferred. When we approach the replay's
+                //     last frame we flip OpenBW into sandbox mode. In that
+                //     mode nextFrame() calls _next_step() at 24fps instead
+                //     of advancing through the replay command stream, so the
+                //     simulation keeps ticking indefinitely from whatever
+                //     world state we're in. No restart, no rewind — truly
+                //     one continuous session. Unit AI continues naturally.
+                //
+                //   ?loop=1      — legacy. Rewinds the replay to frame 0.
+                //
+                //   (neither)    — default vanilla Titan: fire replay-complete
+                //     and fall into the IngameMenuScene.
+                const qs = new URLSearchParams(window.location.search);
+                const endlessMode = qs.get("endless") === "1" || qs.get("endless") === "true";
+                const loopMode = qs.get("loop") === "1" || qs.get("loop") === "true";
+
+                const goEndless = () => {
+                    try {
+                        openBW.setSandboxMode(true);
+                        openBW.setReplayFrameListener(() => {});
+                        console.log(
+                            "[replay-scene] endless=1 — switched OpenBW to sandbox mode; " +
+                                "simulation continues forever at 24fps without replay commands"
+                        );
+                    } catch (err) {
+                        console.warn("[replay-scene] sandbox mode switch failed:", err);
+                    }
+                };
+
                 const emitComplete = debounce(() => {
+                    if (endlessMode) {
+                        goEndless();
+                        return;
+                    }
+                    if (loopMode) {
+                        try {
+                            openBW.setCurrentReplayFrame(0);
+                            openBW.setCurrentFrame(0);
+                            console.log("[replay-scene] loop=1 — rewound replay to frame 0");
+                        } catch (err) {
+                            console.warn(
+                                "[replay-scene] loop rewind failed; keeping frame listener silent:",
+                                err
+                            );
+                        }
+                        return;
+                    }
                     openBW.setReplayFrameListener(() => {});
                     console.log("GG WP");
                     globalEvents.emit("replay-complete", this.replay);
@@ -155,7 +213,41 @@ export class ReplayScene implements TRScene {
 
         document.title = `Titan Reactor - ${gameTitle}`;
 
-        janitor.mop(await music.playGame());
+        // 2026 optimization: don't block the scene mount on the music chunked
+        // download (it can take 30s+ over the CASC bridge in compat mode).
+        // Additionally wait for the user's first gesture before kicking off
+        // playback so Chrome's autoplay policy doesn't silently error.
+        void (async () => {
+            try {
+                const waitForGesture = () =>
+                    new Promise<void>((res) => {
+                        const done = () => {
+                            window.removeEventListener("pointerdown", done);
+                            window.removeEventListener("keydown", done);
+                            res();
+                        };
+                        window.addEventListener("pointerdown", done, { once: true });
+                        window.addEventListener("keydown", done, { once: true });
+                        // Also resolve immediately if AudioContext is already running
+                        // (in case Playwright / Chromium --autoplay-policy=no-user-gesture-required)
+                        try {
+                            const ctx = (globalThis as unknown as { AudioContext?: typeof AudioContext }).AudioContext;
+                            if (ctx) {
+                                // best-effort: check via a throwaway context
+                                const probe = new ctx();
+                                if (probe.state === "running") {
+                                    res();
+                                }
+                                void probe.close().catch(() => {});
+                            }
+                        } catch {}
+                    });
+                await waitForGesture();
+                janitor.mop(await music.playGame());
+            } catch (err) {
+                console.warn("[replay-scene] music.playGame failed, continuing without audio:", err);
+            }
+        })();
         worldComposer.surfaceComposer.gameSurface.show();
         worldComposer.apiSession.ui.show();
 

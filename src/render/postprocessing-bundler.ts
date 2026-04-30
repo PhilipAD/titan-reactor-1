@@ -15,11 +15,16 @@ import {
     ToneMappingMode,
 } from "postprocessing";
 import { Camera, Object3D, PerspectiveCamera, Scene, Vector3 } from "three";
+import { getTitanWebGLCompatMode } from "common/titan-webgl-compat";
 import { TitanRenderComposer } from "./render-composer";
 
 export function isPostProcessing3D( obj: any ): obj is Settings["postprocessing3d"] {
     return obj !== undefined && "depthFocalLength" in obj;
 }
+
+// Compat mode flattens the post-processing pipeline down to [RenderPass, CopyPass].
+// Each extra EffectPass is a full-screen pixel shader pass — on SwiftShader
+// that is frames of stalling. Users won't see bloom/DoF but they will see a map.
 
 class OverlayPass extends RenderPass {
     override set mainCamera( _: Camera ) {}
@@ -97,17 +102,24 @@ export class PostProcessingBundler {
         this.#bloomEffect.selection.add( new Object3D() );
         this.#bloomPass = new EffectPass( _dummyCamera, this.#bloomEffect );
 
-        this.#passes = [
-            this.#renderPass,
-            // this.#depthOfFieldPass,
-            this.#fogOfWarPass,
-            this.#bloomPass,
-            this.#brightnessContrastPass,
-            this.#tonemappingPass,
-            this.renderModeTransitionPass,
-            this.#overlayPass,
-            this.#copyPass,
-        ];
+        const webglCompat = getTitanWebGLCompatMode();
+        this.#passes = webglCompat
+            ? [
+                this.#renderPass,
+                this.#overlayPass,
+                this.#copyPass,
+            ]
+            : [
+                this.#renderPass,
+                // this.#depthOfFieldPass,
+                this.#fogOfWarPass,
+                this.#bloomPass,
+                this.#brightnessContrastPass,
+                this.#tonemappingPass,
+                this.renderModeTransitionPass,
+                this.#overlayPass,
+                this.#copyPass,
+            ];
     }
 
     enablePixelation( enabled: boolean ) {
@@ -154,13 +166,30 @@ export class PostProcessingBundler {
     }
 
     update( renderComposer: TitanRenderComposer ) {
+        if ( getTitanWebGLCompatMode() ) {
+            renderComposer.composer.multisampling = 0;
+            return;
+        }
         renderComposer.composer.multisampling = Math.min(
             this.options.antialias,
             renderComposer.glRenderer.capabilities.maxSamples
         );
 
-        this.#fogOfWarEffect.opacity = this.options.fogOfWar;
-        this.#fogOfWarPass.enabled = this.options.fogOfWar > 0;
+        // Hermes 2026-04 completed-render mode: when the engine is paused
+        // (no _next_frame ticks) the fog-of-war texture never updates so
+        // every tile around _create_completed_unit_at-placed units stays
+        // dark, making the player base invisible. Force the fog-of-war
+        // post-processing pass off in render-only mode.
+        const inHermesCompletedRender = !!(
+            globalThis as Record< string, unknown >
+        ).__hermesCompletedRenderMode;
+        if ( inHermesCompletedRender ) {
+            this.#fogOfWarEffect.opacity = 0;
+            this.#fogOfWarPass.enabled = false;
+        } else {
+            this.#fogOfWarEffect.opacity = this.options.fogOfWar;
+            this.#fogOfWarPass.enabled = this.options.fogOfWar > 0;
+        }
 
         this.#updateDoFPass();
         this.#updateBloomPass();

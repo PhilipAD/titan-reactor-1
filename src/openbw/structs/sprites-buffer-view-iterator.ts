@@ -16,12 +16,19 @@ export class SpritesBufferViewIterator {
     }
 
     *[Symbol.iterator]() {
-        const spriteList = new IntrusiveList( this.#openBW!.HEAPU32 );
+        // Hermes 2026-04 spawn-anything pass: see units-buffer-view.ts
+        // for why we pass a getter instead of the raw typed-array.
+        // Switched to walk() for the same reason -- the legacy iter
+        // terminates one node early and silently drops one sprite per
+        // tile line (with self-referencing sentinels at pairOffset=0,
+        // it's the tail/oldest sprite on each line that gets skipped).
+        const _bw = this.#openBW!;
+        const spriteList = new IntrusiveList( () => _bw.HEAPU32 );
         const spriteTileLineSize = this.#openBW!.getSpritesOnTileLineSize();
         const spritetileAddr = this.#openBW!.getSpritesOnTileLineAddress();
         for ( let l = 0; l < spriteTileLineSize; l++ ) {
             spriteList.addr = spritetileAddr + ( l << 3 );
-            for ( const spriteAddr of spriteList ) {
+            for ( const spriteAddr of spriteList.walk() ) {
                 if ( spriteAddr === 0 ) {
                     continue;
                 }

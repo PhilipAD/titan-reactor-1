@@ -1,11 +1,23 @@
-node_modules
-.env
-.cache
-yarn-error.log
-.DS_Store
-.vscode
-dist
-release
+# Dependencies and build output.
+node_modules/
+dist/
+release/
+coverage/
+.vite/
+*.tsbuildinfo
 
+# Local env and runtime files.
+.env
 .env.local
 .env.production
+.env.development.local
+
+# Local logs, editor files, and caches.
+.cache/
+*.log
+*.tmp
+yarn-error.log
+.DS_Store
+.vscode/
+package-lock.json
+bundled/titan.wasm*

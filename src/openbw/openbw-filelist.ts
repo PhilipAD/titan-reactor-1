@@ -17,7 +17,17 @@ export default class OpenBWFileList {
     constructor( openBw: OpenBWWasm ) {
         openBw.setupCallbacks( {
             js_fatal_error: ( ptr ) => {
-                throw new Error( openBw.UTF8ToString( ptr ) );
+                // Hermes 2026-04 spawn-anything pass: surface the
+                // actual C++ error string in the dev console so we
+                // can diagnose `state_functions::error()` calls
+                // (place_completed_unit failed, attempt to create
+                // unit of null type, fixme rescue passive, etc).
+                // Without this log the user sees a raw "throw" with
+                // an opaque ptr offset, which makes debugging the
+                // force-spawn paths nearly impossible.
+                const msg = openBw.UTF8ToString( ptr );
+                console.error( "[openbw] js_fatal_error:", msg );
+                throw new Error( msg );
             },
             js_pre_main_loop: () => {},
             js_post_main_loop: () => {},

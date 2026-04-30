@@ -1,6 +1,7 @@
 export type TRSceneID =
     | "@home"
     | "@loading"
+    | "@hermes-race-boot"
     | "@replay"
     | "@map"
     | "@iscriptah"

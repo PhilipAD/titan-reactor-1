@@ -24,10 +24,11 @@ import { Janitor, JanitorLogLevel } from "three-janitor";
 import { spriteIsHidden, spriteSortOrder } from "@utils/sprite-utils";
 import { calculateFollowedUnitsTarget, unitIsCompleted, unitIsFlying } from "@utils/unit-utils";
 import { drawFunctions, imageTypes  } from "common/enums";
-import { ImageStruct, UnitStruct  } from "common/types";
+import { ImageStruct, SpriteType, UnitStruct  } from "common/types";
 import { Assets } from "@image/assets";
 import { PxToWorld, floor32 } from "common/utils/conversions";
 import { Color, MathUtils, Vector2, Vector3 } from "three";
+import { BoxGeometry, Mesh, MeshBasicMaterial } from "three";
 import { World } from "./world";
 import { Unit } from "@core/unit";
 import { IterableSet } from "@utils/data-structures/iterable-set";
@@ -43,11 +44,14 @@ import { HeightMaps } from "@image/generate-map";
 import { Terrain } from "@core/terrain";
 import { ViewControllerComposer } from "./view-controller-composer";
 import gameStore from "@stores/game-store";
+import { getHermesUnitVisualAction } from "./hermes-visual-actions";
 
 export type SceneComposer = Awaited<ReturnType<typeof createSceneComposer>>;
 export type SceneComposerApi = SceneComposer["api"];
 
 const white = new Color( 0xffffff );
+const mineralCarryColor = new Color( 0x57b8ff );
+const gasCarryColor = new Color( 0x42f56f );
 
 type AdditionalSceneParams = {
     terrain: Terrain;
@@ -55,8 +59,52 @@ type AdditionalSceneParams = {
     pxToWorld: PxToWorld
 }
 
+const visualNow = () => ( typeof performance !== "undefined" ? performance.now() : Date.now() );
+
+const applyHermesActionPose = ( image: ImageBase, unit: Unit | undefined, isMainImage: boolean ) => {
+    const action = getHermesUnitVisualAction( unit?.id );
+    image.rotation.z = 0;
+    if ( !action || action.kind === "idle" || !isMainImage ) return;
+
+    const phase = visualNow() / ( action.kind === "gathering" ? 95 : 140 ) + action.seed;
+    const wave = Math.sin( phase );
+    image.position.y += Math.abs( wave ) * ( action.kind === "gathering" ? 0.09 : 0.045 );
+    image.rotation.z = wave * ( action.kind === "gathering" ? 0.045 : 0.025 );
+};
+
+const updateHermesCarryMarker = ( sprite: SpriteType, unit: Unit | undefined ) => {
+    const action = getHermesUnitVisualAction( unit?.id );
+    const userData = sprite.userData as Record< string, unknown >;
+    let marker = userData.hermesCarryMarker as Mesh< BoxGeometry, MeshBasicMaterial > | undefined;
+    if ( !marker ) {
+        marker = new Mesh(
+            new BoxGeometry( 0.16, 0.16, 0.16 ),
+            new MeshBasicMaterial( { color: mineralCarryColor } )
+        );
+        marker.name = "hermes-carry-marker";
+        marker.visible = false;
+        marker.renderOrder = 10_000;
+        marker.material.depthTest = false;
+        marker.material.depthWrite = false;
+        marker.matrixAutoUpdate = true;
+        userData.hermesCarryMarker = marker;
+        sprite.add( marker );
+    }
+
+    const shouldShow =
+        !!action?.resource &&
+        ( action.kind === "carrying" || action.kind === "gathering" );
+    marker.visible = shouldShow;
+    if ( !shouldShow ) return;
+
+    marker.material.color.copy( action.resource === "gas" ? gasCarryColor : mineralCarryColor );
+    const phase = visualNow() / 130 + action.seed;
+    marker.position.set( 0.18, 0.34 + Math.sin( phase ) * 0.035, 0.08 );
+    marker.rotation.set( phase * 0.7, phase * 1.1, phase * 0.4 );
+};
+
 // Primarily concerned about converting OpenBW state to three objects and animations
-export const createSceneComposer = async ( world: World, assets: Assets, viewController: ViewControllerComposer, { terrain, pxToWorld, heightMaps } : AdditionalSceneParams ) => {
+export const createSceneComposer = async ( world: World, assets: Assets, viewController: ViewControllerComposer, { terrain, pxToWorld } : AdditionalSceneParams ) => {
     const janitor = new Janitor( "SceneComposer" );
     const _world = borrow( world );
 
@@ -64,11 +112,11 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
     units.externalOnClearUnits = () => _world.events!.emit( "units-cleared" );
     units.externalOnCreateUnit = ( unit ) => _world.events!.emit( "unit-created", unit );
 
-    world.openBW.uploadHeightMap(
-        heightMaps.singleChannel,
-        ( heightMaps.texture.image as ImageData ).width,
-        ( heightMaps.texture.image as ImageData ).height
-    );
+    // The rebuilt OpenBW WASM is stable when ticking/rendering the CHK directly,
+    // but upload_height_map mutates sprite ext-y state inside C++ and can corrupt
+    // memory on some maps before any custom spawns run. Three.js still renders
+    // terrain height from heightMaps; we only skip feeding that height data back
+    // into OpenBW's internal sprite placement.
 
     const scene = janitor.mop(
         new BaseScene( ...world.map.size, terrain, assets.skyBox, assets.envMap ),
@@ -194,10 +242,24 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
         // doodads and resources are always visible
         // show units as fog is lifting from or lowering to explored
         // show if a building has been explored
+        //
+        // Hermes 2026-04 completed-render mode: the OpenBW engine is paused
+        // and `_next_frame` never ticks, which means fog-of-war vision tiles
+        // around _create_completed_unit_at-placed units are never populated.
+        // Without this bypass every player-owned unit (SCV, Bunker, Supply
+        // Depot, etc.) gets sprite.visible=false because
+        // fogOfWar.isSomewhatVisible(x, y) returns 0 for unrevealed tiles,
+        // even though the unit struct + sprite + image were created
+        // correctly. Symptom: terrain + minerals (owner=11) render but the
+        // hermes-spawned base is invisible.
+        const inHermesCompletedRender = !!(
+            globalThis as Record< string, unknown >
+        ).__hermesCompletedRenderMode;
         sprite.visible =
             !spriteIsHidden( spriteStruct ) &&
             ( spriteStruct.owner === 11 ||
                 imageIsDoodad( dat.image ) ||
+                inHermesCompletedRender ||
                 world.fogOfWar.isSomewhatVisible(
                     floor32( spriteStruct.x ),
                     floor32( spriteStruct.y )
@@ -230,7 +292,12 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
         overlayEffectsMainImage.image = null;
 
 
-        for ( const imgAddr of spriteStruct.images.reverse() ) {
+        // Hermes 2026-04 spawn-anything pass: use walkReverse() — the
+        // legacy reverse() iterator terminates one node early and silently
+        // skips the head image, which for 1-image sprites (most units &
+        // doodads) and 2-image sprites (shadow + main building) caused
+        // the main image to never render — only the shadow drew.
+        for ( const imgAddr of spriteStruct.images.walkReverse() ) {
             const imageStruct = world.openBW.structs.image.get( imgAddr );
 
             const image = images.getOrCreate( imageStruct.index, imageStruct.typeId );
@@ -268,6 +335,12 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
                 // flying building or drone, don't use 2d offset
                 image.position.y = imageIsFrozen( imageStruct ) ? 0 : -imageStruct.y / 32;
             }
+
+            applyHermesActionPose(
+                image,
+                unit,
+                imageStruct.index === spriteStruct.mainImageIndex
+            );
 
             image.renderOrder = _images.length;
 
@@ -316,6 +389,7 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
             spriteStruct.typeId,
             sprite,
         );
+        updateHermesCarryMarker( sprite, unit );
 
         sprite.updateMatrix();
         sprite.matrixWorld.copy( sprite.matrix );
@@ -353,6 +427,15 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
         Janitor.logLevel = getJanitorLogLevel();
     } );
 
+    let onFrameErrorCount = 0;
+    const warnOnFrameError = ( e: unknown ) => {
+        onFrameErrorCount++;
+        if ( onFrameErrorCount <= 5 ) {
+            console.warn(
+                `[scene-composer] onFrame threw (${onFrameErrorCount}/5): ${e instanceof Error ? e.message : String( e )}`
+            );
+        }
+    };
 
     return {
         images,
@@ -367,6 +450,8 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
             delta: number,
             renderMode3D: boolean,
         ) {
+            try {
+            const hermesTrace = new URLSearchParams( globalThis.location?.search ?? "" ).has( "trace" );
 
             world.fogOfWar.onFrame( world.players.getVisionFlag() );
 
@@ -390,10 +475,13 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
 
             unitQuadtree.clear();
 
+            if ( hermesTrace ) console.log( "[scene-composer][trace] before units iterator" );
             for ( const unit of world.openBW.iterators.units ) {
                 buildUnit( unit );
             }
+            if ( hermesTrace ) console.log( "[scene-composer][trace] after units iterator" );
 
+            if ( hermesTrace ) console.log( "[scene-composer][trace] before deleted sprites/images" );
             for ( const spriteIndex of world.openBW.iterators.deletedSpritesThisFrame()) {
                 sprites.free( spriteIndex );
             }
@@ -401,17 +489,30 @@ export const createSceneComposer = async ( world: World, assets: Assets, viewCon
             for ( const imageIndex of  world.openBW.iterators.deletedImagesThisFrame()) {
                 images.free( imageIndex );
             }
+            if ( hermesTrace ) console.log( "[scene-composer][trace] after deleted sprites/images" );
 
             imageQuadtree.clear();
 
             // support precompile w/out viewport
 
+            let spriteTraceCount = 0;
+            if ( hermesTrace ) console.log( "[scene-composer][trace] before sprites iterator" );
             for ( const sprite of world.openBW.iterators.sprites ) {
+                if ( hermesTrace && spriteTraceCount < 5 ) {
+                    console.log(
+                        `[scene-composer][trace] build sprite idx=${sprite.index} type=${sprite.typeId}`
+                    );
+                    spriteTraceCount++;
+                }
                 buildSprite(
                     sprite,
                     delta,
                     renderMode3D,
                 );
+            }
+            if ( hermesTrace ) console.log( "[scene-composer][trace] after sprites iterator" );
+            } catch ( e ) {
+                warnOnFrameError( e );
             }
         },
         resetImageCache() {

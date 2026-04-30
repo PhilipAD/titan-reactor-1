@@ -112,6 +112,31 @@ export const createOverlayComposer = (
 
     post.overlayScene.add( minimap, cursorGraphics );
 
+    // 2026 Hermes embed: minimap behaviour is controlled by URL params:
+    //   ?nominimap=1       -> hide the minimap mesh entirely
+    //   ?classicMinimap=1  -> force a flat 2D bottom-left minimap (default ON
+    //                         for the embed). Defaults bake in a -0.7 rad X
+    //                         rotation + 3D mode that turns the minimap into a
+    //                         tilted parallelogram and breaks click hit-tests
+    //                         (clicks land at the wrong tile). Forcing a flat
+    //                         rotation + bottom-left position makes the visual
+    //                         and the raycast match.
+    //   ?classicMinimap=0  -> opt out, restore Titan defaults.
+    let __hermesClassicMinimap = true;
+    try {
+        const qs = new URLSearchParams( window.location.search );
+        if ( qs.get( "nominimap" ) === "1" || qs.get( "nominimap" ) === "true" ) {
+            minimap.visible = false;
+        }
+        if ( qs.get( "classicMinimap" ) === "0" || qs.get( "classicMinimap" ) === "false" ) {
+            __hermesClassicMinimap = false;
+        }
+    } catch ( err ) {
+        // ignore — environment without window.location is fine
+    }
+    ( globalThis as Record< string, unknown > ).__hermesClassicMinimap =
+        __hermesClassicMinimap;
+
     const ignoreOnMinimap = [ unitTypes.darkSwarm, unitTypes.disruptionWeb ];
 
     cursorMaterial.uniforms.uResolution.value.set(
@@ -159,19 +184,49 @@ export const createOverlayComposer = (
     // setDimensions();
 
     function applySettings( { settings }: WorldEvents["settings-changed"] ) {
-        minimap.rotation.set(
-            settings.minimap.rotation[0],
-            settings.minimap.rotation[1],
-            settings.minimap.rotation[2]
-        );
+        // 2026 Hermes embed: in classic mode we override rotation/position so
+        // the minimap is a flat rectangle anchored at the bottom-left. This
+        // keeps the visible quad and the raycast hit area perfectly aligned —
+        // whatever the user clicks on is what the camera moves to.
+        if ( __hermesClassicMinimap ) {
+            minimap.rotation.set( 0, 0, 0 );
+            // Overlay camera is a PerspectiveCamera FOV=45 aspect=1 at z=10
+            // so visible world extent at z=0 is roughly +/-4.14 in clip space
+            // (the GPU stretches that to fit the actual viewport rect). We
+            // pick a scale + position pair so the minimap sits flush to the
+            // bottom-left corner with a small margin and never overflows the
+            // canvas. scale.x = S, scale.y = S * (canvasW/canvasH) thanks to
+            // screenAspect division, so the rendered minimap is square in
+            // pixels regardless of viewport aspect.
+            const HERMES_CLASSIC_SCALE = 1.0;
+            minimap.scale.set( HERMES_CLASSIC_SCALE, HERMES_CLASSIC_SCALE, 1 );
+            minimap.scale.divide( surfaces.gameSurface.screenAspect );
+            // Half-width (world) = S/2 = 0.5; half-height after aspect-divide
+            // for a 16:10 canvas = 0.5 * 1.6 = 0.8. Camera frustum half is
+            // ~4.14, so leave ~0.3 margin from the bottom and left edges.
+            const halfW = HERMES_CLASSIC_SCALE * 0.5;
+            const halfH = halfW * ( surfaces.gameSurface.bufferWidth /
+                Math.max( surfaces.gameSurface.bufferHeight, 1 ) );
+            const FRUSTUM_HALF = 4.142;
+            const MARGIN = 0.3;
+            const HERMES_CLASSIC_POS_X = -FRUSTUM_HALF + halfW + MARGIN;
+            const HERMES_CLASSIC_POS_Y = -FRUSTUM_HALF + halfH + MARGIN;
+            minimap.position.set( HERMES_CLASSIC_POS_X, HERMES_CLASSIC_POS_Y, 0 );
+        } else {
+            minimap.rotation.set(
+                settings.minimap.rotation[0],
+                settings.minimap.rotation[1],
+                settings.minimap.rotation[2]
+            );
 
-        minimap.scale.set( settings.minimap.scale, settings.minimap.scale, 1 );
-        minimap.scale.divide( surfaces.gameSurface.screenAspect );
-        minimap.position.set(
-            settings.minimap.position[0],
-            -settings.minimap.position[1],
-            0
-        );
+            minimap.scale.set( settings.minimap.scale, settings.minimap.scale, 1 );
+            minimap.scale.divide( surfaces.gameSurface.screenAspect );
+            minimap.position.set(
+                settings.minimap.position[0],
+                -settings.minimap.position[1],
+                0
+            );
+        }
 
         minimapMaterial.uniforms.uOpacity.value = settings.minimap.opacity;
         minimapMaterial.uniforms.uSoftEdges.value = settings.minimap.softEdges ? 1 : 0;
@@ -321,14 +376,26 @@ export const createOverlayComposer = (
             );
 
             for ( const unit of units ) {
-                if ( !ignoreOnMinimap.includes( unit.typeId ) ) {
-                    minimapMaterial.buildUnitMinimap(
-                        unit,
-                        assets.bwDat.units[unit.typeId],
-                        world.fogOfWar,
-                        ( playerId: number ) => world.players.get( playerId )?.color ?? white 
-                    );
-                }
+                if ( ignoreOnMinimap.includes( unit.typeId ) ) continue;
+                // Hermes 2026-04 spawn-anything pass: with the
+                // intrusive-list iter terminator fix we now visit every
+                // unit, which can include placements made via
+                // _create_completed_unit_at whose typeId may not have a
+                // matching bwDat entry yet (or briefly hold a stale
+                // value while the engine finishes initializing the
+                // unit). Skip rather than crashing the entire
+                // minimap pass — the minimap is per-frame so a missing
+                // dot for one tick is invisible to the user.
+                const unitDat = assets.bwDat.units[unit.typeId];
+                if ( !unitDat ) continue;
+                minimapMaterial.buildUnitMinimap(
+                    unit,
+                    unitDat,
+                    world.fogOfWar,
+                    ( playerId: number ) => world.players.get( playerId )?.color ?? white,
+                    !!( globalThis as Record< string, unknown > )
+                        .__hermesCompletedRenderMode
+                );
             }
 
             //     for (const viewport of views.activeViewports()) {

@@ -74,10 +74,15 @@ export class LoadingScene implements TRScene {
     }
     
     async load() {
-        
-
         await settingsStore().init();
         useMacroStore.getState().init();
+        const urlParams = new URLSearchParams(window.location.search);
+        const hermesEmbed = (
+            urlParams.get("hideWelcome") === "1" ||
+            urlParams.get("hidewelcome") === "1" ||
+            urlParams.has("hermesRace") ||
+            urlParams.get("hermesBoot") === "1"
+        );
 
         if (!await this.areServersReady()) {
             await waitForTruthy(async () => {
@@ -88,25 +93,29 @@ export class LoadingScene implements TRScene {
         await pluginsStore().init();
     
         await initializeAssets();
-    
-        await preloadIntro();
+
+        if (!hermesEmbed) {
+            await preloadIntro();
+        }
     
         mixer.setVolumes(settingsStore().data.audio);
-    
-        const dropYourSocks = mixer.context.createBufferSource();
-        dropYourSocks.buffer = await mixer.loadAudioBuffer(
-            __static + "/three/drop-your-socks.mp3"
-        );
-    
-        const _disconnect = mixer.connect(
-            dropYourSocks,
-            new Filter(mixer, "bandpass", 50).node,
-            mixer.intro
-        );
-    
-        dropYourSocks.onended = () => _disconnect();
-        dropYourSocks.detune.setValueAtTime(-200, mixer.context.currentTime + 5);
-        dropYourSocks.start();
+
+        if (!hermesEmbed) {
+            const dropYourSocks = mixer.context.createBufferSource();
+            dropYourSocks.buffer = await mixer.loadAudioBuffer(
+                __static + "/three/drop-your-socks.mp3"
+            );
+
+            const _disconnect = mixer.connect(
+                dropYourSocks,
+                new Filter(mixer, "bandpass", 50).node,
+                mixer.intro
+            );
+
+            dropYourSocks.onended = () => _disconnect();
+            dropYourSocks.detune.setValueAtTime(-200, mixer.context.currentTime + 5);
+            dropYourSocks.start();
+        }
 
         return {
             component: <LoadingSceneUI useStore={this.store} />,
