@@ -4,21 +4,21 @@
     "version": "0.7.1",
     "description": "An OpenBW Renderer",
     "scripts": {
-        "sanity": "yarn types:check && yarn test:once",
+        "sanity": "npm run types:check && npm run test:once",
         "types:check": "tsc --noEmit",
         "test": "jest --watchAll",
         "test:once": "jest --runInBand",
         "test:debug": "node --inspect node_modules/jest/bin/jest --runInBand",
         "test:build": "http-server .\\dist\\titan-reactor -p 80",
-        "lint": "yarn eslint . && yarn prettier --check .",
+        "lint": "npm exec eslint . && npm exec prettier -- --check .",
         "postinstall": "git apply -v --stat --directory=node_modules/scm-extractor build/patches/scm-extractor.patch",
         "build:api-types": "ts-node -T .\\build\\api-types\\index.ts",
         "build:plugin-api-docs": "typedoc --out docs/host --tsconfig tsconfig.host-api.json build/api-types/host/index.d.ts && typedoc --out docs/ui --tsconfig tsconfig.ui-api.json build/api-types/ui/index.d.ts",
         "build:runtime": "ts-node -T ./esbuild.runtime.ts",
         "serve:runtime": "http-server .\\dist\\runtime -p 8090 --cors",
         "web": "vite -c vite.config.web.ts",
-        "runtime": "yarn build:runtime && yarn serve:runtime",
-        "build": "vite build -c vite.config.web.ts && yarn build:runtime"
+        "runtime": "npm run build:runtime && npm run serve:runtime",
+        "build": "vite build -c vite.config.web.ts && npm run build:runtime"
     },
     "files": [
         "./types",
