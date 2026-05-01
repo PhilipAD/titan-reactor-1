@@ -358,6 +358,7 @@ const RESOURCE_BUILDING_TYPE_IDS = new Set< number >( [
     0x95, // Zerg Extractor
     0x9d, // Protoss Assimilator
 ] );
+const VESPENE_GEYSER_TYPE_ID = 0xbc;
 
 const ZERG_BUILDING_TYPE_IDS = new Set< number >( [
     0x83, // Hatchery
@@ -1265,6 +1266,47 @@ export const installHermesEntityBridge = ( params: InstallParams ): InstalledBri
         return null;
     };
 
+    const consumedGeyserUnitIds = new Set< number >();
+    const hideGeyserUnderResourceBuilding = ( px: number, py: number ): void => {
+        const MAX_GEYSER_CENTER_DISTANCE_PX = 96;
+        let best: { id: number; distanceSq: number } | null = null;
+        try {
+            for ( const u of openBW.iterators.units as unknown as Iterable< {
+                id?: number;
+                typeId?: number;
+                x?: number;
+                y?: number;
+            } > ) {
+                if (
+                    typeof u.id !== "number" ||
+                    consumedGeyserUnitIds.has( u.id ) ||
+                    u.typeId !== VESPENE_GEYSER_TYPE_ID ||
+                    typeof u.x !== "number" ||
+                    typeof u.y !== "number"
+                ) {
+                    continue;
+                }
+                const dx = u.x - px;
+                const dy = u.y - py;
+                const distanceSq = dx * dx + dy * dy;
+                if ( distanceSq > MAX_GEYSER_CENTER_DISTANCE_PX * MAX_GEYSER_CENTER_DISTANCE_PX ) continue;
+                if ( !best || distanceSq < best.distanceSq ) {
+                    best = { id: u.id, distanceSq };
+                }
+            }
+            if ( !best ) return;
+            // A refinery/extractor/assimilator replaces the neutral geyser in
+            // StarCraft. In completed-render mode we create the building but
+            // the map's neutral geyser sprite remains, so it can draw over the
+            // building. Remove only the matched neutral unit after the resource
+            // building exists; layout still keeps the original resource coords.
+            openBW.get_util_funcs().remove_unit( best.id );
+            consumedGeyserUnitIds.add( best.id );
+        } catch ( err ) {
+            console.warn( "[hermes-entity-bridge] failed to hide geyser under resource building:", err );
+        }
+    };
+
     const killByHermesId = ( hermesId: string ) => {
         const rec = installed.get( hermesId );
         if ( !rec ) return false;
@@ -1962,6 +2004,9 @@ export const installHermesEntityBridge = ( params: InstallParams ): InstalledBri
                             `[hermes-entity-bridge][spawn] type=${typeId} requested=(${px},${py}) -> placed=(${actual.px},${actual.py}) addr=${addr} (after ${createCompletedCallsBeforeSuccess} sweep attempts)`
                         );
                     }
+                    if ( isResourceBuildingType ) {
+                        hideGeyserUnderResourceBuilding( actual.px, actual.py );
+                    }
                     return { address: addr, px: actual.px, py: actual.py, mode: "completed" };
                 }
             } catch ( err ) {
@@ -2005,6 +2050,9 @@ export const installHermesEntityBridge = ( params: InstallParams ): InstalledBri
                     );
                     if ( addr ) {
                         claimTileBlock( tx, ty );
+                        if ( isResourceBuildingType ) {
+                            hideGeyserUnderResourceBuilding( tx, ty );
+                        }
                         console.log(
                             `[hermes-entity-bridge][spawn] paused trigger building rendered type=${typeId} requested=(${px},${py}) -> placed=(${tx},${ty})`
                         );
@@ -3368,16 +3416,36 @@ export const installHermesEntityBridge = ( params: InstallParams ): InstalledBri
         if ( !data || typeof data !== "object" ) return;
         if ( data.type === "hermes:entities" ) {
             if ( !Array.isArray( data.entities ) ) return;
+            const notifyParentApplied = ( ok: boolean ) => {
+                const send = () => {
+                    try {
+                        window.parent?.postMessage(
+                            { type: "titan:hermes-entities-applied", ok },
+                            "*"
+                        );
+                    } catch {
+                        /* non-fatal */
+                    }
+                };
+                // Defer two frames so the map and first sprites can present before
+                // the parent enables "Reload Titan" (avoids a flash on the base
+                // loading screen).
+                requestAnimationFrame( () => {
+                    requestAnimationFrame( send );
+                } );
+            };
             try {
                 const r = placeEntities( data.entities );
                 console.log(
                     `[hermes-entity-bridge] placed: spawned=${r.spawned} updated=${r.updated} killed=${r.killed} skipped=${r.skipped} adopted=${r.adopted} live=${installed.size} resources=${resources.length} | create-stats: politeSearch=${createStats.politeSearchOk} forceCompleted=${createStats.forceCompletedOk} triggerCreate=${createStats.triggerCreateOk} marineFallback=${createStats.marineFallback} totalFail=${createStats.totalFail}`
                 );
+                notifyParentApplied( true );
             } catch ( err ) {
                 console.warn(
                     "[hermes-entity-bridge] placeEntities failed:",
                     err
                 );
+                notifyParentApplied( false );
             }
             return;
         }

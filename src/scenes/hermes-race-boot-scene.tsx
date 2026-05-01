@@ -9,6 +9,7 @@ type StarCraftRace = "protoss" | "terran" | "zerg";
 type BootPhase = "splash" | "race" | "loading";
 
 const SPLASH_MS = 1800;
+const SELECTED_RACE_LS_KEY = "hermes.titan.selectedRace";
 
 const raceDisplayName: Record< StarCraftRace, string > = {
     protoss: "Protoss",
@@ -29,6 +30,35 @@ const getAssetServerUrl = () => {
         localStorage.getItem( "assetServerUrl" ) ??
         "http://127.0.0.1:8080"
     );
+};
+
+const readSavedRace = (): StarCraftRace | null => {
+    try {
+        const race = localStorage.getItem( SELECTED_RACE_LS_KEY );
+        return race === "protoss" || race === "terran" || race === "zerg" ? race : null;
+    } catch {
+        return null;
+    }
+};
+
+const saveSelectedRace = ( race: StarCraftRace ) => {
+    try {
+        localStorage.setItem( SELECTED_RACE_LS_KEY, race );
+    } catch {}
+};
+
+const shouldResetRaceSelection = () => {
+    try {
+        return new URLSearchParams( window.location.search ).has( "hermesResetRace" );
+    } catch {
+        return false;
+    }
+};
+
+const clearSavedRace = () => {
+    try {
+        localStorage.removeItem( SELECTED_RACE_LS_KEY );
+    } catch {}
 };
 
 const screenStyle: CSSProperties = {
@@ -148,8 +178,9 @@ const raceSlots: Record< StarCraftRace, [number, number, number, number] > = {
 };
 
 const HermesRaceBoot = ( { mapUrl }: { mapUrl: string } ) => {
-    const [phase, setPhase] = useState< BootPhase >( "splash" );
-    const [selectedRace, setSelectedRace] = useState< StarCraftRace | null >( null );
+    const resetRaceSelection = shouldResetRaceSelection();
+    const [phase, setPhase] = useState< BootPhase >( () => resetRaceSelection ? "race" : readSavedRace() ? "loading" : "splash" );
+    const [selectedRace, setSelectedRace] = useState< StarCraftRace | null >( () => resetRaceSelection ? null : readSavedRace() );
     const [highlightedRace, setHighlightedRace] = useState< StarCraftRace | null >( null );
     const assetServerUrl = getAssetServerUrl();
     const titanReadyRef = useRef< Promise<unknown> | null >( null );
@@ -186,8 +217,25 @@ const HermesRaceBoot = ( { mapUrl }: { mapUrl: string } ) => {
     }, [phase] );
 
     useEffect( () => {
+        if ( resetRaceSelection ) {
+            clearSavedRace();
+        }
+    }, [resetRaceSelection] );
+
+    useEffect( () => {
+        void fetch( splashUrl, { cache: "force-cache" } ).catch( () => {} );
+        void fetch( loadingUrl, { cache: "force-cache" } ).catch( () => {} );
+    }, [loadingUrl, splashUrl] );
+
+    useEffect( () => {
         titanReadyRef.current = new LoadingScene().load();
     }, [] );
+
+    useEffect( () => {
+        if ( !selectedRace ) return;
+        saveSelectedRace( selectedRace );
+        window.parent?.postMessage( { type: "titan:race-selected", race: selectedRace }, "*" );
+    }, [selectedRace] );
 
     useEffect( () => {
         if ( phase !== "loading" || !selectedRace ) return;
@@ -195,7 +243,7 @@ const HermesRaceBoot = ( { mapUrl }: { mapUrl: string } ) => {
         void ( async () => {
             try {
                 await ( titanReadyRef.current ?? new LoadingScene().load() );
-                const buffer = await fetch( mapUrl ).then( ( res ) => res.arrayBuffer() );
+                const buffer = await fetch( mapUrl, { cache: "force-cache" } ).then( ( res ) => res.arrayBuffer() );
                 if ( cancelled ) return;
                 await sceneStore().loadScene( new MapScene( buffer ) );
             } catch ( err ) {
@@ -209,7 +257,6 @@ const HermesRaceBoot = ( { mapUrl }: { mapUrl: string } ) => {
 
     const selectRace = ( race: StarCraftRace ) => {
         setSelectedRace( race );
-        window.parent?.postMessage( { type: "titan:race-selected", race }, "*" );
         setPhase( "loading" );
     };
 
@@ -260,6 +307,7 @@ const HermesRaceBoot = ( { mapUrl }: { mapUrl: string } ) => {
                             autoPlay
                             muted
                             loop
+                            preload="auto"
                             playsInline
                             style={{
                                 ...raceVideoStyle,
@@ -275,6 +323,7 @@ const HermesRaceBoot = ( { mapUrl }: { mapUrl: string } ) => {
                             autoPlay
                             muted
                             loop
+                            preload="auto"
                             playsInline
                             style={{
                                 ...raceVideoStyle,
