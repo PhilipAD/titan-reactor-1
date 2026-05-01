@@ -34,6 +34,15 @@ export const createPostProcessingComposer = (
     terrain: Terrain,
     assets: Assets
 ) => {
+    let hermesEmbedNoMinimap = false;
+    try {
+        const qs = new URLSearchParams( window.location.search );
+        hermesEmbedNoMinimap =
+            qs.get( "nominimap" ) === "1" || qs.get( "nominimap" ) === "true";
+    } catch {
+        /* no window in some test envs */
+    }
+
     const janitor = new Janitor("PostProcessingComposer");
 
     const postProcessingBundle = janitor.mop(
@@ -202,9 +211,17 @@ export const createPostProcessingComposer = (
                     postProcessingBundle.updateDofTarget(_target);
                 }
 
-                //todo; make this bettta?
-                postProcessingBundle.overlayScene.getObjectByName("minimap")!.visible =
-                    v === viewportsComposer.primaryViewport;
+                // Hermes embed: ?nominimap=1 hides the minimap in overlay-composer;
+                // keep it hidden here too — otherwise this line forces it visible on
+                // every frame for the primary viewport.
+                const minimapMesh = postProcessingBundle.overlayScene.getObjectByName(
+                    "minimap"
+                );
+                if ( minimapMesh ) {
+                    minimapMesh.visible =
+                        !hermesEmbedNoMinimap &&
+                        v === viewportsComposer.primaryViewport;
+                }
 
                 // iterate all images again and update image frames according to different view camera
                 for (const spriteStruct of world.openBW.iterators.sprites) {
